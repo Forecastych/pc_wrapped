@@ -1,0 +1,65 @@
+:root {
+  --ink: #1d1442;
+  --milk: #fbf8ff;
+  --violet: #6a3cf0;
+  --violet-deep: #4b23c4;
+  --lemon: #ffe33d;
+  --mint: #2ad8a1;
+  --pink: #ff5ca8;
+  --tangerine: #ff8a1f;
+  --sky: #45b0ff;
+
+  --display: 'Dela Gothic One', 'Onest Variable', system-ui, sans-serif;
+  --text: 'Onest Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  color-scheme: dark;
+  font-family: var(--text);
+  font-size: 16px;
+  line-height: 1.45;
+  color: var(--milk);
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--violet);
+}
+
+html:has(body.mini),
+body.mini {
+  background: transparent;
+  overflow: hidden;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 3px solid var(--lemon);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

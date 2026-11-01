@@ -1,0 +1,78 @@
+import { describe, expect, it } from 'vitest';
+import { aggregate, scrollMeters } from './aggregate';
+import { mouseFun, scrollFun, keysFun, clicksFun, activeFun } from './fun';
+import { periodRange } from './dates';
+import { keyName } from './keyboard';
+import type { DayStats } from './types';
+
+function day(date: string, p: Partial<DayStats> = {}): DayStats {
+  return {
+    date, keys: 0, keyCounts: {}, clicksLeft: 0, clicksRight: 0, clicksMiddle: 0, clicksOther: 0, wheelNotches: 0, mouseMm: 0,
+    activeSeconds: 0, hourlyKeys: new Array(24).fill(0), hourlyClicks: new Array(24).fill(0), hourlyMouseMm: new Array(24).fill(0),
+    hourlyActive: new Array(24).fill(0), apps: {}, peakKpm: 0, peakKpmAt: '', firstActive: '', lastActive: '', longestSessionSec: 0, ...p,
+  };
+}
+
+describe('aggregate', () => {
+  const a = day('2026-10-30', {
+    keys: 100, keyCounts: { '65': 60, '8': 40 }, clicksLeft: 10, clicksRight: 2, mouseMm: 5000, wheelNotches: 100,
+    activeSeconds: 3600, apps: { Code: 3000, Chrome: 600 }, peakKpm: 80, peakKpmAt: '10:15', firstActive: '09:00', lastActive: '23:30',
+    longestSessionSec: 2000, hourlyActive: Object.assign(new Array(24).fill(0), { 2: 600, 10: 3000 }),
+  });
+  const b = day('2026-10-31', {
+    keys: 300, keyCounts: { '65': 100, '32': 200 }, clicksLeft: 5, mouseMm: 9000, activeSeconds: 7200, apps: { Chrome: 7000 },
+    peakKpm: 120, peakKpmAt: '21:00', firstActive: '11:00', lastActive: '01:30', longestSessionSec: 5000,
+  });
+  const empty = day('2026-11-01');
+  const s = aggregate([a, b, empty]);
+
+  it('суммирует', () => {
+    expect(s.dayCount).toBe(2);
+    expect(s.keys).toBe(400);
+    expect(s.clicks).toBe(17);
+    expect(s.mouseMm).toBe(14000);
+    expect(s.keyCounts[0]).toEqual([32, 200]);
+    expect(s.keyMap[65]).toBe(160);
+    expect(s.apps[0]).toEqual(['Chrome', 7600]);
+  });
+
+  it('рекорды и привычки', () => {
+    expect(s.peakKpm).toEqual({ value: 120, date: '2026-10-31', at: '21:00' });
+    expect(s.longestSession?.sec).toBe(5000);
+    expect(s.bestDay?.date).toBe('2026-10-31');
+    expect(s.typicalStart).toBe('10:00');
+    // 23:30 и 01:30 следующего дня → медиана 00:30
+    expect(s.typicalEnd).toBe('00:30');
+    expect(s.nightShare).toBeCloseTo(600 / 10800);
+  });
+
+  it('пустой период не падает', () => {
+    const e = aggregate([]);
+    expect(e.keys).toBe(0);
+    expect(e.typicalStart).toBeNull();
+  });
+});
+
+describe('fun', () => {
+  it('сравнения', () => {
+    expect(mouseFun(0.5)).toBe('мышка пока отдыхает');
+    expect(mouseFun(210)).toBe('это 2 футбольных поля');
+    expect(mouseFun(1200)).toBe('это 3 круга по стадиону');
+    expect(mouseFun(63_300)).toBe('это 1,5 марафона');
+    expect(scrollFun(30)).toBe('как подняться на 10 этажей');
+    expect(scrollFun(9000)).toBe('это 1 Эверест');
+    expect(keysFun(18_000)).toBe('хватило бы на 10 страниц текста');
+    expect(clicksFun(4000)).toBe('если клик — это шаг, это 3 км пешком');
+    expect(activeFun(7200 * 3)).toBe('это 3 полнометражных фильма');
+    expect(scrollMeters(200)).toBe(3);
+  });
+  it('периоды и клавиши', () => {
+    const t = new Date(2026, 10, 1);
+    expect(periodRange('week', t, '2026-01-01')).toEqual({ from: '2026-10-26', to: '2026-11-01' });
+    expect(periodRange('year', t, '2025-05-05').from).toBe('2026-01-01');
+    expect(periodRange('all', t, '2025-05-05').from).toBe('2025-05-05');
+    expect(keyName(0x20)).toBe('Пробел');
+    expect(keyName(0x41)).toBe('A');
+    expect(keyName(0x70)).toBe('F1');
+  });
+});
