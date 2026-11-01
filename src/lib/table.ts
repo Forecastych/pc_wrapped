@@ -1,10 +1,9 @@
-// Таблица по дням для Excel: точка с запятой, десятичная запятая, BOM — иначе русский Excel
-// склеит всё в одну колонку и покажет кириллицу кракозябрами.
+// Таблица по дням для Excel. Числа — числами, даты — датами: Excel сам покажет их в формате системы.
 import { km, scrollMeters } from './aggregate';
 import type { DayStats } from './types';
+import { xlsx, type Cell } from './xlsx';
 
-const dec = (v: number, digits: number) => v.toFixed(digits).replace('.', ',');
-const cell = (s: string) => (/[;"\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+const round = (v: number, digits: number) => Number(v.toFixed(digits));
 
 const HEAD = [
   'Дата',
@@ -23,25 +22,26 @@ const HEAD = [
   'Главная программа',
 ];
 
-export function daysCsv(days: DayStats[]): string {
-  const rows = days.map((d) => {
+export function daysRows(days: DayStats[]): Cell[][] {
+  return days.map((d) => {
     const top = Object.entries(d.apps).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
     return [
-      d.date,
+      { date: d.date },
       d.keys,
       d.clicksLeft + d.clicksRight + d.clicksMiddle + d.clicksOther,
       d.clicksLeft,
       d.clicksRight,
       d.clicksMiddle,
-      dec(km(d.mouseMm), 3),
-      dec(scrollMeters(d.wheelNotches), 1),
-      dec(d.activeSeconds / 3600, 2),
+      round(km(d.mouseMm), 3),
+      round(scrollMeters(d.wheelNotches), 1),
+      round(d.activeSeconds / 3600, 2),
       d.firstActive,
       d.lastActive,
       Math.round(d.longestSessionSec / 60),
       d.peakKpm,
-      cell(top),
-    ].join(';');
+      top,
+    ];
   });
-  return '﻿' + [HEAD.join(';'), ...rows].join('\r\n') + '\r\n';
 }
+
+export const daysXlsx = (days: DayStats[]) => xlsx('pc_wrapped', HEAD, daysRows(days));

@@ -277,12 +277,14 @@ export async function notifyTest(): Promise<void> {
 }
 
 /** Клик по карточке: Rust закрывает её и, если есть `action`, открывает итоги в главном окне. */
-export async function toastAction(action?: string): Promise<void> {
-  if (inTauri) return tauriInvoke('toast_action', { action: action ?? null });
-}
-
 export async function onToast(cb: (t: ToastData) => void): Promise<Unlisten> {
   if (inTauri) return tauriListen('toast', cb);
+  return () => {};
+}
+
+/** Курсор над карточкой уведомления (окно сквозное, мышь оно само не видит). */
+export async function onToastHover(cb: (over: boolean) => void): Promise<Unlisten> {
+  if (inTauri) return tauriListen('toast-hover', cb);
   return () => {};
 }
 

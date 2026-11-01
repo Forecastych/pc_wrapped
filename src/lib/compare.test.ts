@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { baselineRange, baselineTotals, delta, deltaText } from './compare';
-import { daysCsv } from './csv';
+import { daysRows, daysXlsx } from './table';
+import { crc32, excelDate } from './xlsx';
 import { periodRange } from './dates';
 import type { DayStats } from './types';
 
@@ -58,14 +59,29 @@ describe('сравнение с прошлым', () => {
   });
 });
 
-describe('CSV', () => {
-  it('excel-формат: BOM, точка с запятой, десятичная запятая, экранирование', () => {
-    const csv = daysCsv([
-      day('2026-11-01', { keys: 1234, clicksLeft: 10, clicksRight: 2, mouseMm: 1_234_567, wheelNotches: 100, activeSeconds: 5400, apps: { 'My; App': 10, Code: 5 } }),
-    ]);
-    expect(csv.startsWith('﻿Дата;Нажатий;')).toBe(true);
-    const row = csv.split('\r\n')[1].split(';');
-    expect(row.slice(0, 9)).toEqual(['2026-11-01', '1234', '12', '10', '2', '0', '1,235', '1,5', '1,50']);
-    expect(csv.split('\r\n')[1].endsWith('"My; App"')).toBe(true);
+describe('Excel', () => {
+  const d = day('2026-11-01', { keys: 1234, clicksLeft: 10, clicksRight: 2, mouseMm: 1_234_567, wheelNotches: 100, activeSeconds: 5400, apps: { 'My <App> & co': 10, Code: 5 } });
+
+  it('строки: дата датой, числа числами', () => {
+    const row = daysRows([d])[0];
+    expect(row.slice(0, 9)).toEqual([{ date: '2026-11-01' }, 1234, 12, 10, 2, 0, 1.235, 1.5, 1.5]);
+    expect(row[13]).toBe('My <App> & co');
+  });
+
+  it('дата Excel и crc32', () => {
+    expect(excelDate('1900-03-01')).toBe(61);
+    expect(excelDate('2026-11-01')).toBe(46327);
+    expect(crc32(new TextEncoder().encode('123456789'))).toBe(0xcbf43926);
+  });
+
+  it('zip: сигнатуры и экранирование', () => {
+    const z = daysXlsx([d]);
+    const v = new DataView(z.buffer);
+    expect(v.getUint32(0, true)).toBe(0x04034b50);
+    expect(v.getUint32(z.length - 22, true)).toBe(0x06054b50);
+    expect(v.getUint16(z.length - 22 + 10, true)).toBe(6);
+    const text = new TextDecoder().decode(z);
+    expect(text).toContain('My &lt;App&gt; &amp; co');
+    expect(text).toContain('<c r="A2" s="2"><v>46327</v></c>');
   });
 });

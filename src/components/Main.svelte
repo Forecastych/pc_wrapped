@@ -4,7 +4,7 @@
   import { aggregate, type Summary } from '../lib/aggregate';
   import { PERIOD_LABEL, dateLabel, iso, periodRange } from '../lib/dates';
   import { BASELINE_HINT, baselineRange, baselineTotals, delta, deltaText } from '../lib/compare';
-  import { daysCsv } from '../lib/csv';
+  import { daysXlsx } from '../lib/table';
   import { count, hours, kmText, num, pct } from '../lib/format';
   import { KEYBOARD, keyName } from '../lib/keyboard';
   import { METRICS } from '../lib/metrics';
@@ -67,10 +67,10 @@
     setTimeout(() => (note = ''), 4000);
   }
 
-  async function exportCsv() {
-    const name = `pc_wrapped_${period}_${iso(new Date())}.csv`;
+  async function exportXlsx() {
+    const name = `pc_wrapped_${period}_${iso(new Date())}.xlsx`;
     try {
-      const path = await saveExport(name, new TextEncoder().encode(daysCsv(days)));
+      const path = await saveExport(name, daysXlsx(days));
       flashNote(`Таблица сохранена: ${path}`);
     } catch (e) {
       flashNote(`Не получилось сохранить таблицу: ${e}`);
@@ -129,7 +129,7 @@
     <div class="actions">
       <button class="ghost" onclick={() => toggleMini()}>Мини-окно</button>
       <button class="ghost" onclick={() => (showSettings = true)}>Настройки</button>
-      <button class="ghost" onclick={exportCsv} disabled={!s.dayCount} title="Таблица по дням за выбранный период, открывается в Excel">CSV</button>
+      <button class="ghost" onclick={exportXlsx} disabled={!s.dayCount} title="Таблица по дням за выбранный период">Excel</button>
       <button class="cta" onclick={() => openStory(period)} disabled={!s.dayCount}>Итоги слайдами</button>
     </div>
   </header>

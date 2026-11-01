@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use store::Store;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -31,6 +31,8 @@ struct AppState {
     tray_text: Mutex<HashMap<String, String>>,
     /// Итоги, которые открыть, когда главное окно загрузится (клик по уведомлению при закрытом окне).
     pending_story: Mutex<Option<String>>,
+    /// Итоги из последнего уведомления: щелчок по значку в трее вскоре после него открывает их.
+    toast_story: Mutex<Option<(String, Instant)>>,
 }
 
 // ---------- Команды для интерфейса ----------
@@ -105,19 +107,17 @@ async fn notify_test(app: AppHandle) {
     show_toast(&app, &notify::sample());
 }
 
-/// Клик по уведомлению: закрыть карточку и, если в ней итоги, открыть их слайдами.
-#[tauri::command]
-async fn toast_action(app: AppHandle, action: Option<String>) {
+/// Итоги слайдами (`lastweek` / `lastmonth`) по щелчку в трее после уведомления.
+fn open_story(app: &AppHandle, action: String) {
     if let Some(w) = app.get_webview_window("toast") {
         let _ = w.close();
     }
-    let Some(action) = action else { return };
     if app.get_webview_window("main").is_some() {
         let _ = app.emit_to("main", "open-story", &action);
     } else {
         *app.state::<AppState>().pending_story.lock().unwrap() = Some(action);
     }
-    show_main(&app);
+    show_main(app);
 }
 
 #[tauri::command]
@@ -299,6 +299,8 @@ fn open_mini_window(app: &AppHandle) {
 
 const TOAST_W: f64 = 340.0;
 const TOAST_H: f64 = 112.0;
+/// Сколько после уведомления с итогами щелчок по трею открывает их, а не просто окно.
+const STORY_AFTER_TOAST: Duration = Duration::from_secs(120);
 
 /// Игра или видео на весь экран, презентация, заблокированный экран — молчим.
 fn do_not_disturb() -> bool {
@@ -312,9 +314,10 @@ fn do_not_disturb() -> bool {
     }
 }
 
-/// Карточка справа снизу, как в мессенджерах. Окно не активируется ни при показе, ни по клику,
-/// поэтому не забирает фокус у игры или набора текста. Вызывать не из главного потока.
+/// Карточка справа снизу, как в мессенджерах. Окно не активируется и не ловит мышь: клики
+/// проходят в то, что под ним, а при наведении карточка бледнеет. Вызывать не из главного потока.
 fn show_toast(app: &AppHandle, toast: &notify::Toast) {
+    *app.state::<AppState>().toast_story.lock().unwrap() = toast.action.map(|a| (a.to_string(), Instant::now()));
     if app.get_webview_window("toast").is_some() {
         // новая карточка заменяет старую и заново запускает её таймер
         let _ = app.emit_to("toast", "toast", toast);
@@ -341,7 +344,42 @@ fn show_toast(app: &AppHandle, toast: &notify::Toast) {
     if let Some((x, y)) = toast_position(app) {
         b = b.position(x, y);
     }
-    let _ = b.build();
+    let Ok(w) = b.build() else { return };
+    let _ = w.set_ignore_cursor_events(true);
+    watch_toast_hover(app);
+}
+
+/// Сквозное окно не получает событий мыши, поэтому наведение проверяем сами, раз в 100 мс.
+/// Поток один на все карточки и заканчивается, когда карточка закрылась.
+fn watch_toast_hover(app: &AppHandle) {
+    static WATCHING: AtomicBool = AtomicBool::new(false);
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut over = false;
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let Some(w) = app.get_webview_window("toast") else {
+                WATCHING.store(false, Ordering::SeqCst);
+                // карточку могли пересоздать, пока мы выходили
+                if app.get_webview_window("toast").is_some() && !WATCHING.swap(true, Ordering::SeqCst) {
+                    continue;
+                }
+                return;
+            };
+            let (Ok(c), Ok(p), Ok(s)) = (app.cursor_position(), w.outer_position(), w.outer_size()) else { continue };
+            let now = c.x >= p.x as f64
+                && c.x < p.x as f64 + s.width as f64
+                && c.y >= p.y as f64
+                && c.y < p.y as f64 + s.height as f64;
+            if now != over {
+                over = now;
+                let _ = app.emit_to("toast", "toast-hover", over);
+            }
+        }
+    });
 }
 
 fn spawn_toast(app: &AppHandle, toast: notify::Toast) {
@@ -499,7 +537,12 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
 
 fn on_tray_click(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-        show_main(tray.app_handle());
+        let app = tray.app_handle();
+        let story = app.state::<AppState>().toast_story.lock().unwrap().take();
+        match story {
+            Some((action, at)) if at.elapsed() < STORY_AFTER_TOAST => open_story(app, action),
+            _ => show_main(app),
+        }
     }
 }
 
@@ -662,6 +705,7 @@ pub fn run() {
                 settings: Mutex::new(settings.clone()),
                 tray_text: Mutex::new(HashMap::new()),
                 pending_story: Mutex::new(None),
+                toast_story: Mutex::new(None),
             });
 
             // Главный значок приложения: левый клик открывает статистику.
@@ -705,7 +749,6 @@ pub fn run() {
             get_autostart,
             set_autostart,
             notify_test,
-            toast_action,
             take_pending_story,
             save_export
         ])

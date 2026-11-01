@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { closeWindow, inTauri, onToast, toastAction } from '../lib/api';
+  import { closeWindow, inTauri, onToast, onToastHover } from '../lib/api';
   import type { ToastData } from '../lib/types';
 
   const SHOW_MS = 4500;
@@ -10,7 +10,8 @@
   const DEMO: ToastData = { kind: 'week', title: 'Твоя неделя за компом', body: '31 ч 20 мин за компом · 184 310 нажатий · 6,4 км мышкой', action: 'lastweek' };
   let toast = $state<ToastData | null>((window as unknown as { __TOAST__?: ToastData }).__TOAST__ ?? (inTauri ? null : DEMO));
   let shown = $state(false);
-  let hovered = false;
+  // курсор над карточкой: она бледнеет, чтобы было видно, что под ней, — клики и так проходят насквозь
+  let ghost = $state(false);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -20,7 +21,6 @@
   }
 
   function hide() {
-    if (hovered) return;
     shown = false;
     closeTimer = setTimeout(() => closeWindow(), 300);
   }
@@ -28,38 +28,27 @@
   onMount(() => {
     requestAnimationFrame(() => (shown = true));
     arm();
-    let off: (() => void) | undefined;
+    const offs: (() => void)[] = [];
     onToast((t) => {
       toast = t;
       clearTimeout(closeTimer);
       shown = true;
       arm();
-    }).then((f) => (off = f));
-    return () => off?.();
+    }).then((f) => offs.push(f));
+    onToastHover((over) => (ghost = over)).then((f) => offs.push(f));
+    return () => offs.forEach((f) => f());
   });
 </script>
 
 {#if toast}
-  <button
-    class="toast {toast.kind}"
-    class:shown
-    onmouseenter={() => {
-      hovered = true;
-      clearTimeout(hideTimer);
-    }}
-    onmouseleave={() => {
-      hovered = false;
-      arm(2000);
-    }}
-    onclick={() => toastAction(toast?.action)}
-  >
+  <div class="toast {toast.kind}" class:shown class:ghost role="status">
     <span class="icon" aria-hidden="true">{ICON[toast.kind]}</span>
     <span class="text">
       <b>{toast.title}</b>
       <span class="body">{toast.body}</span>
-      {#if toast.action}<span class="more">Открыть итоги →</span>{/if}
+      {#if toast.action}<span class="more">Щёлкни по значку в трее — покажу итоги</span>{/if}
     </span>
-  </button>
+  </div>
 {/if}
 
 <style>
@@ -70,7 +59,6 @@
     gap: 12px;
     align-items: center;
     padding: 10px 14px 10px 12px;
-    border: 0;
     border-radius: 18px 18px 18px 6px;
     background: var(--ink);
     color: var(--milk);
@@ -85,6 +73,9 @@
   .toast.shown {
     transform: none;
     opacity: 1;
+  }
+  .toast.shown.ghost {
+    opacity: 0.15;
   }
   .toast::before {
     content: '';

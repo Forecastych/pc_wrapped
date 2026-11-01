@@ -297,7 +297,7 @@
   }
   .half {
     flex-basis: 0;
-    min-width: 92px;
+    min-width: max-content; /* «остальными» при 3% не вылезает за плашку */
     background: var(--ink);
     color: var(--milk);
     border-radius: 22px 22px 22px 6px;
