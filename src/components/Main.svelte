@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { firstDate, getDays, getSettings, inTauri, onLive, onOpenStory, saveExport, takePendingStory, toggleMini } from '../lib/api';
+  import { firstDate, getDataDir, getDays, getSettings, inTauri, onLive, onOpenStory, saveExport, takePendingStory, toggleMini } from '../lib/api';
   import { aggregate, type Summary } from '../lib/aggregate';
   import { PERIOD_LABEL, dateLabel, iso, periodRange } from '../lib/dates';
   import { BASELINE_HINT, baselineRange, baselineTotals, delta, deltaText } from '../lib/compare';
@@ -9,8 +9,9 @@
   import { KEYBOARD, keyName } from '../lib/keyboard';
   import { METRICS } from '../lib/metrics';
   import { fit } from '../lib/fit';
-  import type { DayStats, PeriodKey, Settings as SettingsT } from '../lib/types';
+  import type { DataDir, DayStats, PeriodKey, Settings as SettingsT } from '../lib/types';
   import SettingsPanel from './Settings.svelte';
+  import DataDirSetup from './DataDirSetup.svelte';
   import Story from './Story.svelte';
 
   const PERIODS: PeriodKey[] = ['today', 'week', 'month', 'year', 'all'];
@@ -19,6 +20,7 @@
   let first = $state<string>('');
   let settings = $state<SettingsT | null>(null);
   let showSettings = $state(false);
+  let dataDir = $state<DataDir | null>(null);
   let story = $state<{ summary: Summary; period: PeriodKey } | null>(null);
   let loading = $state(true);
   let baseline = $state<{ period: PeriodKey; days: DayStats[] } | null>(null);
@@ -93,6 +95,7 @@
     (async () => {
       first = await firstDate();
       settings = await getSettings();
+      dataDir = await getDataDir();
       await load(period);
       offStory = await onOpenStory(storyFromToast);
       storyFromToast(await takePendingStory());
@@ -254,6 +257,10 @@
     {/if}
   </main>
 </div>
+
+{#if dataDir && !dataDir.chosen}
+  <DataDirSetup dir={dataDir} onDone={(path) => (dataDir = { ...dataDir!, path, chosen: true })} />
+{/if}
 
 {#if showSettings && settings}
   <SettingsPanel {settings} onClose={(next) => { if (next) settings = next; showSettings = false; }} />

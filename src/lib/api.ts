@@ -1,6 +1,6 @@
 // Мост к Rust. В обычном браузере (npm run dev без Tauri) работает на выдуманных данных,
 // чтобы интерфейс можно было делать и смотреть без сборки приложения.
-import type { DayStats, Settings, ToastData } from './types';
+import type { DataDir, DayStats, Settings, ToastData } from './types';
 import { addDays, iso } from './dates';
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -227,6 +227,32 @@ export async function openDataDir(): Promise<void> {
   if (inTauri) return tauriInvoke('open_data_dir');
 }
 
+// в демо `?setup` показывает экран первого запуска
+let demoDataDir: DataDir = {
+  path: 'D:\\pc_wrapped',
+  chosen: typeof location === 'undefined' || !new URLSearchParams(location.search).has('setup'),
+  suggested: 'D:\\pc_wrapped',
+  systemOnly: false,
+};
+
+export async function getDataDir(): Promise<DataDir> {
+  if (inTauri) return tauriInvoke('get_data_dir');
+  return { ...demoDataDir };
+}
+
+/** Системный выбор папки. Возвращает, куда реально лягут данные (с подпапкой pc_wrapped), или null. */
+export async function pickFolder(start?: string): Promise<string | null> {
+  if (inTauri) return tauriInvoke('pick_folder', { start: start ?? null });
+  return 'E:\\Stats\\pc_wrapped';
+}
+
+/** Переносит данные в папку и запоминает её. Возвращает итоговый путь. */
+export async function setDataDir(path: string): Promise<string> {
+  if (inTauri) return tauriInvoke('set_data_dir', { path });
+  demoDataDir = { ...demoDataDir, path, chosen: true };
+  return path;
+}
+
 export async function getAutostart(): Promise<boolean> {
   if (inTauri) return tauriInvoke('get_autostart');
   return false;
@@ -279,7 +305,7 @@ export async function closeWindow() {
 
 // ---------- Экспорт ----------
 
-/** Сохраняет файл в «Загрузки» и показывает его в проводнике. Возвращает полный путь. */
+/** Сохраняет файл в папку `exports` рядом с данными и показывает его в проводнике. Возвращает полный путь. */
 export async function saveExport(name: string, bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   if (inTauri) {
     // сырые байты, а не JSON: картинка слайда весит мегабайты

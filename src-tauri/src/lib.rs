@@ -9,6 +9,7 @@ mod win;
 use model::{DayStats, Settings, METRICS};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use store::Store;
@@ -21,6 +22,10 @@ use tracker::{Now, Tracker};
 struct AppState {
     tracker: Arc<Mutex<Tracker>>,
     store: Arc<Store>,
+    /// %APPDATA%\io.github.pcwrapped: тут лежит `location.json`, а пока папку не выбрали — и сами данные.
+    app_dir: PathBuf,
+    /// Человек уже выбрал, где хранить данные. Пока нет, главное окно спрашивает.
+    data_chosen: AtomicBool,
     settings: Mutex<Settings>,
     /// Что сейчас нарисовано в каждом значке трея, чтобы не перерисовывать то же самое.
     tray_text: Mutex<HashMap<String, String>>,
@@ -120,10 +125,67 @@ fn take_pending_story(state: State<'_, AppState>) -> Option<String> {
     state.pending_story.lock().unwrap().take()
 }
 
-/// Сохраняет картинку или таблицу в «Загрузки» и показывает файл в проводнике.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DataDir {
+    path: String,
+    chosen: bool,
+    /// Что предложить при первом запуске: `pc_wrapped` на несистемном диске, если такой есть.
+    suggested: String,
+    system_only: bool,
+}
+
+#[tauri::command]
+fn get_data_dir(state: State<'_, AppState>) -> DataDir {
+    #[cfg(windows)]
+    let drive = win::data_drives().into_iter().next();
+    #[cfg(not(windows))]
+    let drive: Option<String> = None;
+    DataDir {
+        path: state.store.root().display().to_string(),
+        chosen: state.data_chosen.load(Ordering::Relaxed),
+        system_only: drive.is_none(),
+        suggested: drive.map_or_else(|| state.app_dir.clone(), |d| PathBuf::from(d).join("pc_wrapped")).display().to_string(),
+    }
+}
+
+/// Системный диалог выбора папки. Async — потому что диалог блокирующий и в главном потоке ему нельзя.
+#[tauri::command]
+async fn pick_folder(app: AppHandle, start: Option<String>) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let mut dialog = app.dialog().file().set_title("Где хранить статистику pc_wrapped");
+    // диалог открываем у ближайшей существующей папки: предложенной D:\pc_wrapped может ещё не быть
+    if let Some(dir) = start.as_deref().map(Path::new).and_then(|p| p.ancestors().find(|a| a.is_dir())) {
+        dialog = dialog.set_directory(dir);
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&w);
+    }
+    let picked = dialog.blocking_pick_folder()?.into_path().ok()?;
+    Some(store::data_dir_for(&picked).display().to_string())
+}
+
+/// Переносит данные в новую папку и запоминает её.
+#[tauri::command]
+async fn set_data_dir(app: AppHandle, path: String) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    let target = PathBuf::from(path.trim());
+    if !target.is_absolute() {
+        return Err("нужен полный путь, например D:\\pc_wrapped".into());
+    }
+    state.store.relocate(&target).map_err(|e| format!("не получилось перенести данные: {e}"))?;
+    let settings = state.settings.lock().unwrap().clone();
+    state.store.save_settings(&settings).map_err(|e| e.to_string())?;
+    save_today(&app);
+    store::write_location(&state.app_dir, &target).map_err(|e| format!("данные перенесены, но путь не запомнился: {e}"))?;
+    state.data_chosen.store(true, Ordering::Relaxed);
+    Ok(target.display().to_string())
+}
+
+/// Сохраняет картинку или таблицу в `exports` рядом с данными и показывает файл в проводнике.
 /// Байты приходят сырым телом запроса (без JSON-массива на мегабайты), имя — в заголовке `x-name`.
 #[tauri::command]
-fn save_export(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+fn save_export(state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Result<String, String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("нет данных".into());
     };
@@ -132,7 +194,8 @@ fn save_export(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<Strin
     if name.trim_matches('.').is_empty() {
         name = "pc_wrapped".into();
     }
-    let dir = app.path().download_dir().or_else(|_| app.path().app_data_dir()).map_err(|e| e.to_string())?;
+    let dir = state.store.root().join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = unique_path(&dir, &name);
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     #[cfg(windows)]
@@ -568,12 +631,18 @@ fn start_ticker(app: AppHandle) {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .setup(|app| {
             let handle = app.handle().clone();
-            let dir = app.path().app_data_dir()?;
-            let first_run = !dir.join("settings.json").exists();
-            let store = Arc::new(Store::new(dir)?);
+            let app_dir = app.path().app_data_dir()?;
+            // пока папку не выбрали (или диск с ней пропал) — пишем в %APPDATA%, при выборе всё переедет
+            let (store, data_chosen) = match store::read_location(&app_dir).map(Store::new) {
+                Some(Ok(s)) => (s, true),
+                _ => (Store::new(app_dir.clone())?, false),
+            };
+            let first_run = !store.root().join("settings.json").exists();
+            let store = Arc::new(store);
             let settings = store.load_settings();
             let now = Now::local();
             let today = store.load_day(&now.date).unwrap_or_else(|| DayStats::new(&now.date));
@@ -588,6 +657,8 @@ pub fn run() {
             app.manage(AppState {
                 tracker,
                 store,
+                app_dir,
+                data_chosen: AtomicBool::new(data_chosen),
                 settings: Mutex::new(settings.clone()),
                 tray_text: Mutex::new(HashMap::new()),
                 pending_story: Mutex::new(None),
@@ -611,7 +682,7 @@ pub fn run() {
             start_ticker(handle.clone());
 
             let autostarted = std::env::args().any(|a| a == "--autostart");
-            if first_run || !autostarted {
+            if first_run || !data_chosen || !autostarted {
                 show_main(&handle);
             }
             if settings.mini_open {
@@ -628,6 +699,9 @@ pub fn run() {
             toggle_mini,
             open_main,
             open_data_dir,
+            get_data_dir,
+            pick_folder,
+            set_data_dir,
             get_autostart,
             set_autostart,
             notify_test,

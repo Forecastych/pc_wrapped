@@ -351,6 +351,23 @@ fn center_vertically(mask: &[u8], s: usize) -> Option<Vec<u8>> {
 
 /// Сейчас лучше не мешать: игра или видео на весь экран, презентация, заблокированный экран.
 /// Это та же проверка, по которой молчат уведомления самой Windows.
+/// Жёсткие диски, кроме системного: `["D:\\", "E:\\"]`. Флешки и сетевые не берём.
+pub fn data_drives() -> Vec<String> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    const DRIVE_FIXED: u32 = 3;
+    let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_ascii_uppercase();
+    let mask = unsafe { GetLogicalDrives() };
+    (0..26u8)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| format!("{}:\\", (b'A' + i) as char))
+        .filter(|d| !d.starts_with(&system))
+        .filter(|d| {
+            let w: Vec<u16> = d.encode_utf16().chain([0]).collect();
+            unsafe { GetDriveTypeW(w.as_ptr()) == DRIVE_FIXED }
+        })
+        .collect()
+}
+
 pub fn do_not_disturb() -> bool {
     use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_ACCEPTS_NOTIFICATIONS, QUNS_APP, QUNS_QUIET_TIME};
     let mut state = 0;

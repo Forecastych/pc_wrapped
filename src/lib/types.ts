@@ -50,3 +50,13 @@ export interface ToastData {
   body: string;
   action?: 'lastweek' | 'lastmonth';
 }
+
+/** Где лежат данные. `chosen: false` — первый запуск, папку ещё не выбрали. */
+export interface DataDir {
+  path: string;
+  chosen: boolean;
+  /** Что предложить: `pc_wrapped` на несистемном диске. */
+  suggested: string;
+  /** Других жёстких дисков нет — предлагаем системный. */
+  systemOnly: boolean;
+}

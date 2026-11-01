@@ -81,7 +81,7 @@
       } else {
         // <a download> в WebView2 срабатывает через раз — в приложении пишем файл через Rust
         await saveExport(name, new Uint8Array(await blob.arrayBuffer()));
-        flash(inTauri ? 'Сохранено в «Загрузки»' : 'Картинка сохранена');
+        flash(inTauri ? 'Сохранено — открываю папку' : 'Картинка сохранена');
       }
     } catch (e) {
       console.error('save slide', e);

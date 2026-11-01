@@ -1,13 +1,16 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { getAutostart, inTauri, notifyTest, openDataDir, setAutostart, setSettings } from '../lib/api';
+  import { getAutostart, getDataDir, inTauri, notifyTest, openDataDir, setAutostart, setSettings } from '../lib/api';
+  import DataDirField from './DataDirField.svelte';
   import { METRICS } from '../lib/metrics';
-  import type { Metric, Settings } from '../lib/types';
+  import type { DataDir, Metric, Settings } from '../lib/types';
 
   let { settings, onClose }: { settings: Settings; onClose: (next?: Settings) => void } = $props();
 
   let draft = $state<Settings>(untrack(() => structuredClone($state.snapshot(settings))));
   let autostart = $state(false);
+  let dataDir = $state<DataDir | null>(null);
+  let moved = $state('');
   let saving = $state(false);
   let error = $state('');
   // значение из файла могло быть не из списка — тогда добавляем его, чтобы select не стал пустым
@@ -15,6 +18,7 @@
 
   onMount(async () => {
     autostart = await getAutostart();
+    dataDir = await getDataDir();
   });
 
   function toggle(list: Metric[], m: Metric, max: number): Metric[] {
@@ -120,6 +124,25 @@
       </label>
     </fieldset>
 
+    <fieldset>
+      <legend>Где хранить</legend>
+      <p class="hint">Статистика по дням, а ещё сохранённые картинки и таблицы (подпапка exports). Данные переезжают сразу, без «Сохранить».</p>
+      {#if dataDir}
+        {#key dataDir.path}
+          <DataDirField
+            current={dataDir.path}
+            start={dataDir.path}
+            applyLabel="Перенести сюда"
+            onDone={(path) => {
+              dataDir = { ...dataDir!, path };
+              moved = `Данные перенесены в ${path}`;
+            }}
+          />
+        {/key}
+      {/if}
+      {#if moved}<p class="moved" role="status">{moved}</p>{/if}
+    </fieldset>
+
     <p class="privacy">
       Всё хранится только на этом компьютере. Что вы печатали, программа не знает и не записывает: только сколько раз нажата
       каждая клавиша.
@@ -222,6 +245,11 @@
     border: 2px solid color-mix(in srgb, var(--ink) 25%, transparent);
     background: white;
     color: var(--ink);
+  }
+  .moved {
+    margin: 10px 0 0;
+    font-size: 14px;
+    font-weight: 600;
   }
   .privacy {
     margin: 20px 0 0;
