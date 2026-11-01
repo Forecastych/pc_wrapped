@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush, GetTextExtentPoint32W, SelectObject,
-    SetBkMode, SetTextColor, ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
-    DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FF_SWISS, FW_BOLD, OUT_TT_PRECIS, TRANSPARENT,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush, GetTextExtentPoint32W, GetTextFaceW, SelectObject, SetTextCharacterExtra,
+    SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
+    DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FF_SWISS, FW_BOLD, HDC, HFONT, NONANTIALIASED_QUALITY, OUT_TT_PRECIS, TRANSPARENT,
 };
 use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -213,8 +213,9 @@ unsafe fn file_description(path: &str) -> Option<String> {
     if s.is_empty() || s.len() > 60 { None } else { Some(s.to_string()) }
 }
 
-/// Рисует текст системным шрифтом (Bahnschrift, жирный, сжатый по ширине) и возвращает маску
-/// прозрачности `size×size`. Цифры вытягиваются почти на всю высоту значка, как у Afterburner.
+/// Рисует текст системным шрифтом (Bahnschrift, жирный) и возвращает маску прозрачности `size×size`.
+/// Без сглаживания: на значке размытые серые края читаются хуже, чем чёткие пиксели. Ширину символов
+/// не сжимаем — уменьшаем кегль, пока строка не влезет, а потом ставим цифры точно по центру.
 pub fn text_mask(text: &str, size: u32) -> Option<Vec<u8>> {
     let s = size as i32;
     let wtext: Vec<u16> = text.encode_utf16().collect();
@@ -242,54 +243,35 @@ pub fn text_mask(text: &str, size: u32) -> Option<Vec<u8>> {
         let old_bmp = SelectObject(hdc, bmp as _);
         SetBkMode(hdc, TRANSPARENT as _);
         SetTextColor(hdc, 0x00FF_FFFF);
+        // 1px между символами, иначе на мелких значках точка слипается с единицей в «L».
+        SetTextCharacterExtra(hdc, 1);
 
-        // Высота шрифта = размер значка; ширину символов ужимаем, пока строка не влезет.
-        let face = wide("Bahnschrift");
-        let mut width = (s * 9 / 20).max(2);
-        let mut font;
-        let mut old_font;
-        loop {
-            font = CreateFontW(
-                -s,
-                width,
-                0,
-                0,
-                FW_BOLD as _,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET as _,
-                OUT_TT_PRECIS as _,
-                CLIP_DEFAULT_PRECIS as _,
-                ANTIALIASED_QUALITY as _,
-                FF_SWISS as _,
-                face.as_ptr(),
-            );
-            if font.is_null() {
-                SelectObject(hdc, old_bmp);
-                DeleteObject(bmp as _);
-                DeleteDC(hdc);
-                return None;
+        // Длинные строки вроде «123k» обычным начертанием влезают только мелким кеглем, поэтому
+        // пробуем и родные узкие начертания Bahnschrift и берём то, где цифры выходят крупнее.
+        let mut best: Option<(Vec<u16>, i32)> = None;
+        for name in ["Bahnschrift", "Bahnschrift SemiCondensed", "Bahnschrift Condensed"] {
+            let face = wide(name);
+            if let Some(h) = fit_height(hdc, &face, &wtext, s) {
+                if best.as_ref().map_or(true, |&(_, b)| h > b) {
+                    best = Some((face, h));
+                }
             }
-            old_font = SelectObject(hdc, font as _);
-            let mut sz: SIZE = std::mem::zeroed();
-            GetTextExtentPoint32W(hdc, wtext.as_ptr(), wtext.len() as i32, &mut sz);
-            if sz.cx <= s - 1 || width <= 2 {
-                break;
-            }
-            SelectObject(hdc, old_font);
-            DeleteObject(font as _);
-            width -= 1;
         }
+        let Some((face, height)) = best else {
+            SelectObject(hdc, old_bmp);
+            DeleteObject(bmp as _);
+            DeleteDC(hdc);
+            return None;
+        };
+        let font = bold_font(&face, height);
+        let old_font = SelectObject(hdc, font as _);
 
-        // Цифры сидят выше центра строки (место под хвосты букв), поэтому чуть опускаем.
-        let shift = s / 10;
-        let mut rc = RECT { left: 0, top: shift, right: s, bottom: s + shift };
+        let mut rc = RECT { left: 0, top: 0, right: s, bottom: s };
         DrawTextW(hdc, wtext.as_ptr(), wtext.len() as i32, &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         GdiFlush();
 
         let px = std::slice::from_raw_parts(bits as *const u8, (s * s * 4) as usize);
-        let mask: Vec<u8> = px.chunks_exact(4).map(|p| p[0].max(p[1]).max(p[2])).collect();
+        let raw: Vec<u8> = px.chunks_exact(4).map(|p| p[0].max(p[1]).max(p[2])).collect();
 
         SelectObject(hdc, old_font);
         DeleteObject(font as _);
@@ -297,6 +279,92 @@ pub fn text_mask(text: &str, size: u32) -> Option<Vec<u8>> {
         DeleteObject(bmp as _);
         DeleteDC(hdc);
 
-        if mask.iter().any(|&a| a > 0) { Some(mask) } else { None }
+        center_vertically(&raw, s as usize)
+    }
+}
+
+/// Жирный шрифт без сглаживания; `height` — кегль в пикселях.
+unsafe fn bold_font(face: &[u16], height: i32) -> HFONT {
+    CreateFontW(
+        -height,
+        0,
+        0,
+        0,
+        FW_BOLD as _,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET as _,
+        OUT_TT_PRECIS as _,
+        CLIP_DEFAULT_PRECIS as _,
+        NONANTIALIASED_QUALITY as _,
+        FF_SWISS as _,
+        face.as_ptr(),
+    )
+}
+
+/// Самый крупный кегль, при котором строка влезает в `s` пикселей по ширине.
+/// Цифры занимают ~70% кегля, поэтому начинаем с кегля чуть больше значка.
+unsafe fn fit_height(hdc: HDC, face: &[u16], text: &[u16], s: i32) -> Option<i32> {
+    let mut height = s + s / 4;
+    while height >= 6 {
+        let font = bold_font(face, height);
+        if font.is_null() {
+            return None;
+        }
+        let old = SelectObject(hdc, font as _);
+        // Неизвестную гарнитуру GDI молча подменяет другой — такая нам не нужна.
+        let mut got = [0u16; 64];
+        let n = GetTextFaceW(hdc, got.len() as i32, got.as_mut_ptr()) as usize;
+        let want = face.strip_suffix(&[0]).unwrap_or(face);
+        if got[..n.min(got.len())].strip_suffix(&[0]).unwrap_or(&got[..n.min(got.len())]) != want {
+            SelectObject(hdc, old);
+            DeleteObject(font as _);
+            return None;
+        }
+        let mut sz: SIZE = std::mem::zeroed();
+        GetTextExtentPoint32W(hdc, text.as_ptr(), text.len() as i32, &mut sz);
+        SelectObject(hdc, old);
+        DeleteObject(font as _);
+        if sz.cx <= s {
+            return Some(height);
+        }
+        height -= 1;
+    }
+    Some(6)
+}
+
+/// Сдвигает маску так, чтобы закрашенные строки стояли по центру: строка шрифта оставляет место
+/// под хвосты букв, и цифры без сдвига сидят выше середины. Пустая маска — `None`.
+fn center_vertically(mask: &[u8], s: usize) -> Option<Vec<u8>> {
+    let inked = |y: usize| mask[y * s..(y + 1) * s].iter().any(|&a| a > 0);
+    let top = (0..s).find(|&y| inked(y))?;
+    let bottom = (0..s).rev().find(|&y| inked(y))?;
+    let shift = (s - 1 - bottom) as isize - ((s - 1 - bottom + top) / 2) as isize;
+    let mut out = vec![0u8; s * s];
+    for y in top..=bottom {
+        let ny = (y as isize + shift) as usize;
+        out[ny * s..(ny + 1) * s].copy_from_slice(&mask[y * s..(y + 1) * s]);
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_mask_is_crisp_and_centered() {
+        for size in [20u32, 24, 32] {
+            for text in ["0.3", "999", "123k", "1.2k", "12k"] {
+                let m = text_mask(text, size).expect("Bahnschrift есть в Windows 10+");
+                let s = size as usize;
+                assert!(m.iter().all(|&a| a == 0 || a == 255), "{text}@{size}: есть полутона");
+                let rows: Vec<usize> = (0..s).filter(|&y| m[y * s..(y + 1) * s].iter().any(|&a| a > 0)).collect();
+                let (top, bottom) = (rows[0], *rows.last().unwrap());
+                assert!(bottom - top + 1 >= s * 2 / 5, "{text}@{size}: цифры слишком мелкие");
+                assert!((top as isize - (s - 1 - bottom) as isize).abs() <= 1, "{text}@{size}: не по центру");
+            }
+        }
     }
 }

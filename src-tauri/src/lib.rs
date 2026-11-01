@@ -72,13 +72,15 @@ fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) 
     Ok(())
 }
 
+// Окна создаём только из async-команд: синхронная команда выполняется в главном потоке,
+// и WebviewWindowBuilder::build() в ней на Windows зависает намертво.
 #[tauri::command]
-fn toggle_mini(app: AppHandle) {
+async fn toggle_mini(app: AppHandle) {
     toggle_mini_window(&app);
 }
 
 #[tauri::command]
-fn open_main(app: AppHandle) {
+async fn open_main(app: AppHandle) {
     show_main(&app);
 }
 
@@ -219,9 +221,12 @@ fn icon_size() -> u32 {
 
 /// Значок: системный шрифт, если получилось, иначе свой пиксельный.
 fn tray_pixels(text: &str, size: u32, bg: [u8; 4]) -> Vec<u8> {
+    // На 16px системный шрифт в 3–4 символа не помещается без каши — там чётче пиксельный 3×5.
     #[cfg(windows)]
-    if let Some(mask) = win::text_mask(text, size) {
-        return font::compose(&mask, size, bg, INK);
+    if size > 16 {
+        if let Some(mask) = win::text_mask(text, size) {
+            return font::compose(&mask, size, bg, INK);
+        }
     }
     font::render(text, size, bg, INK)
 }
@@ -238,7 +243,11 @@ fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 fn on_menu(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         "open" => show_main(app),
-        "mini" => toggle_mini_window(app),
+        "mini" => {
+            // не строим окно прямо в обработчике меню — по той же причине, что и в командах
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { toggle_mini_window(&app) });
+        }
         "through" => {
             let state = app.state::<AppState>();
             let mut s = state.settings.lock().unwrap().clone();

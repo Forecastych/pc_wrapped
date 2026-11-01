@@ -9,6 +9,7 @@
   let draft = $state<Settings>(untrack(() => structuredClone($state.snapshot(settings))));
   let autostart = $state(false);
   let saving = $state(false);
+  let error = $state('');
 
   onMount(async () => {
     autostart = await getAutostart();
@@ -21,10 +22,15 @@
 
   async function save() {
     saving = true;
+    error = '';
+    // пустое поле type=number даёт null, а Rust ждёт число — без этого сохранение падает целиком
+    const next: Settings = { ...$state.snapshot(draft), dpi: Math.round(Number(draft.dpi)) || settings.dpi };
     try {
-      await setSettings(draft);
+      await setSettings(next);
       await setAutostart(autostart);
-      onClose(structuredClone($state.snapshot(draft)));
+      onClose(next);
+    } catch (e) {
+      error = `Не получилось сохранить: ${e}`;
     } finally {
       saving = false;
     }
@@ -89,6 +95,8 @@
       каждая клавиша.
       {#if inTauri}<button class="link" onclick={() => openDataDir()}>Открыть папку с данными</button>{/if}
     </p>
+
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
 
     <div class="buttons">
       <button class="ghost" onclick={() => onClose()}>Отмена</button>
@@ -187,6 +195,15 @@
     border: 0;
     padding: 0;
     text-decoration: underline;
+    font-weight: 600;
+  }
+  .error {
+    margin: 14px 0 0;
+    padding: 10px 14px;
+    background: #ffd9d9;
+    color: #8a1020;
+    border-radius: 12px;
+    font-size: 14px;
     font-weight: 600;
   }
   .buttons {

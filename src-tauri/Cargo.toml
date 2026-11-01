@@ -1,6 +1,6 @@
 [package]
 name = "pc-wrapped"
-version = "0.1.0"
+version = "0.1.1"
 description = "Счётчики мыши и клавиатуры в трее и итоги в стиле Wrapped"
 authors = ["Forecastych"]
 license = "MIT"
