@@ -1,6 +1,6 @@
 [package]
 name = "pc-wrapped"
-version = "0.2.2"
+version = "0.2.3"
 description = "Счётчики мыши и клавиатуры в трее и итоги в стиле Wrapped"
 authors = ["Forecastych"]
 license = "PolyForm-Noncommercial-1.0.0"

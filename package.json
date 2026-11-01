@@ -1,7 +1,7 @@
 {
   "name": "pc-wrapped",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "Счётчики мыши и клавиатуры в трее и итоги в стиле Wrapped",
   "license": "PolyForm-Noncommercial-1.0.0",

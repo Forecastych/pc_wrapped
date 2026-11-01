@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { aggregate, scrollMeters } from './aggregate';
-import { mouseFun, scrollFun, keysFun, clicksFun, activeFun } from './fun';
+import { mouseFun, scrollFun, keysFun, clicksFun, activeFun, compare, pct, DISTANCES, HEIGHTS, TEXTS, DURATIONS, type Ref } from './fun';
 import { periodRange } from './dates';
 import { keyName } from './keyboard';
 import type { DayStats } from './types';
@@ -56,15 +56,44 @@ describe('aggregate', () => {
 describe('fun', () => {
   it('сравнения', () => {
     expect(mouseFun(0.5)).toBe('мышка пока отдыхает');
-    expect(mouseFun(210)).toBe('это 2 футбольных поля');
-    expect(mouseFun(1200)).toBe('это 3 круга по стадиону');
-    expect(mouseFun(63_300)).toBe('это 1,5 марафона');
-    expect(scrollFun(30)).toBe('как подняться на 10 этажей');
-    expect(scrollFun(9000)).toBe('это 1 Эверест');
-    expect(keysFun(18_000)).toBe('хватило бы на 10 страниц текста');
-    expect(clicksFun(4000)).toBe('если клик — это шаг, это 3 км пешком');
-    expect(activeFun(7200 * 3)).toBe('это 3 полнометражных фильма');
+    expect(scrollFun(1)).toBe('колесо почти не крутили');
+    expect(keysFun(50)).toBe('клавиатура скучает');
+    expect(clicksFun(3)).toBe('мышь почти не щёлкала');
+    expect(activeFun(100)).toBe('меньше одной песни');
     expect(scrollMeters(200)).toBe(3);
+
+    const bus: Ref = { v: 12, forms: ['автобус', 'автобуса', 'автобусов'], tail: ' в длину' };
+    const moon: Ref = { v: 384_400_000, forms: ['путь до Луны', 'пути до Луны', 'путей до Луны'], part: 'пути до Луны', min: 0.0001 };
+    expect(compare(24, [bus])).toBe('2 автобуса в длину');
+    expect(compare(18, [bus])).toBe('1,5 автобуса в длину');
+    expect(compare(6, [bus])).toBeUndefined(); // долей у автобуса нет
+    expect(compare(1200, [bus])).toBe('100 автобусов в длину'); // больше 40 раз — всё равно в самом крупном
+    expect(compare(192_200_000, [moon])).toBe('50% пути до Луны');
+    expect(compare(38_440, [moon])).toBe('0,01% пути до Луны');
+    expect(compare(3844, [moon])).toBeUndefined();
+    expect(pct(0.042)).toBe('4,2%');
+    expect(pct(0.0035)).toBe('0,35%');
+    expect(pct(0.001)).toBe('0,1%');
+  });
+
+  it('справочники: на любом масштабе осмысленная фраза и разнообразие', () => {
+    const sweep = (from: number, to: number, f: (x: number) => string) => {
+      const seen = new Set<string>();
+      for (let x = from; x < to; x *= 1.07) {
+        const s = f(x);
+        expect(s, `${x}`).not.toMatch(/undefined|NaN|Infinity| 0% |^это $/);
+        expect(f(x)).toBe(s); // выбор стабилен
+        seen.add(s.replace(/[\d,  %]+/g, '#'));
+      }
+      return seen.size;
+    };
+    expect(sweep(1, 2e9, mouseFun)).toBeGreaterThan(20);
+    expect(sweep(3, 1e7, scrollFun)).toBeGreaterThan(15);
+    expect(sweep(100, 1e9, keysFun)).toBeGreaterThan(10);
+    expect(sweep(10, 1e8, clicksFun)).toBeGreaterThan(15);
+    expect(sweep(210, 1e8, activeFun)).toBeGreaterThan(12);
+    for (const refs of [DISTANCES, HEIGHTS, TEXTS, DURATIONS])
+      for (let i = 1; i < refs.length; i++) expect(refs[i].v, refs[i].part).toBeGreaterThan(refs[i - 1].v);
   });
   it('периоды и клавиши', () => {
     const t = new Date(2026, 10, 1);
