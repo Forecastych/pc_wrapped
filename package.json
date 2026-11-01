@@ -1,7 +1,7 @@
 {
   "name": "pc-wrapped",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "Счётчики мыши и клавиатуры в трее и итоги в стиле Wrapped",
   "license": "MIT",

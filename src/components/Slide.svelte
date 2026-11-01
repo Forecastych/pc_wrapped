@@ -5,25 +5,31 @@
   import type { PeriodKey } from '../lib/types';
   import { count, hours, kmText, num, pct, plural } from '../lib/format';
   import { activeFun, clicksFun, keysFun, mouseFun, scrollFun } from '../lib/fun';
-  import { dateLabel } from '../lib/dates';
+  import { MONTHS, dateLabel, iso, parseIso, periodRange } from '../lib/dates';
   import { keyName, KEYBOARD } from '../lib/keyboard';
   import { fit } from '../lib/fit';
 
   let { s, def, period }: { s: Summary; def: SlideDef; period: PeriodKey } = $props();
 
+  const lastWeek = periodRange('lastweek', new Date(), '');
+  const lastMonth = parseIso(periodRange('lastmonth', new Date(), '').from);
   const PERIOD_TITLE: Record<PeriodKey, string> = {
     today: 'Твой день за компом',
     week: 'Твоя неделя за компом',
     month: 'Твой месяц за компом',
     year: `Твой ${new Date().getFullYear()} за компом`,
     all: 'Всё время за компом',
+    lastweek: 'Твоя неделя за компом',
+    lastmonth: `Твой ${MONTHS[lastMonth.getMonth()]} за компом`,
   };
   const FOOT: Record<PeriodKey, string> = {
-    today: dateLabel(new Date().toISOString().slice(0, 10)),
+    today: dateLabel(iso(new Date())),
     week: 'последние 7 дней',
     month: 'последние 30 дней',
     year: String(new Date().getFullYear()),
     all: 'за всё время',
+    lastweek: `${dateLabel(lastWeek.from)} – ${dateLabel(lastWeek.to)}`,
+    lastmonth: `${MONTHS[lastMonth.getMonth()]} ${lastMonth.getFullYear()}`,
   };
   const withDate = $derived(period !== 'today');
 

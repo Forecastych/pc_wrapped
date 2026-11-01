@@ -69,6 +69,18 @@ pub struct Settings {
     pub mini_clickthrough: bool,
     /// Мини-окно открыто (восстанавливаем при запуске).
     pub mini_open: bool,
+    /// Всплывающие карточки справа снизу. Выключено — молчим совсем.
+    pub notifications: bool,
+    /// Карточка с итогами прошлой недели в понедельник.
+    pub weekly_report: bool,
+    /// Карточка с итогами прошлого месяца первого числа.
+    pub monthly_report: bool,
+    /// Напоминать встать, если сидишь без перерыва дольше `break_minutes`.
+    pub break_reminder: bool,
+    pub break_minutes: u32,
+    /// Неделя (`2026-W44`) и месяц (`2026-10`), за которые итоги уже показаны.
+    pub last_weekly: String,
+    pub last_monthly: String,
 }
 
 impl Default for Settings {
@@ -79,6 +91,13 @@ impl Default for Settings {
             mini_metrics: vec!["keys".into(), "clicks".into(), "mouse".into(), "scroll".into()],
             mini_clickthrough: false,
             mini_open: false,
+            notifications: true,
+            weekly_report: true,
+            monthly_report: true,
+            break_reminder: false,
+            break_minutes: 60,
+            last_weekly: String::new(),
+            last_monthly: String::new(),
         }
     }
 }

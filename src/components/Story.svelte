@@ -1,10 +1,12 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
-  import { toPng } from 'html-to-image';
+  import { toBlob } from 'html-to-image';
   import Slide from './Slide.svelte';
   import { buildSlides } from '../lib/slides';
   import type { Summary } from '../lib/aggregate';
   import type { PeriodKey } from '../lib/types';
+  import { inTauri, saveExport } from '../lib/api';
+  import { iso } from '../lib/dates';
 
   let { summary, period, onClose }: { summary: Summary; period: PeriodKey; onClose: () => void } = $props();
   const onBack = () => onClose();
@@ -16,7 +18,7 @@
   let stageW = $state(0);
   let stageH = $state(0);
   let still = $state(false);
-  let saving = $state(false);
+  let busy = $state<'save' | 'copy' | null>(null);
   let toast = $state<string | null>(null);
   let cardEl = $state<HTMLDivElement>();
 
@@ -53,8 +55,10 @@
     await tick();
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     try {
-      const url = await toPng(node, { pixelRatio: 3, cacheBust: false });
-      return await (await fetch(url)).blob();
+      // не toPng + fetch(dataUrl): CSP приложения (connect-src без data:) режет такой fetch
+      const blob = await toBlob(node, { pixelRatio: 3, cacheBust: false });
+      if (!blob) throw new Error('пустая картинка');
+      return blob;
     } finally {
       still = false;
     }
@@ -66,31 +70,41 @@
   }
 
   async function save() {
-    if (saving) return;
-    saving = true;
+    if (busy) return;
+    busy = 'save';
     try {
       const blob = await render();
-      const name = `pc-wrapped-${period}-${new Date().toISOString().slice(0, 10)}-${i + 1}.png`;
+      const name = `pc_wrapped_${period}_${iso(new Date())}_${i + 1}.png`;
       const file = new File([blob], name, { type: 'image/png' });
-      if (canShare && matchMedia('(pointer: coarse)').matches && navigator.canShare({ files: [file] })) {
+      if (!inTauri && canShare && matchMedia('(pointer: coarse)').matches && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file] }).catch(() => {});
       } else {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-        flash('Картинка сохранена');
+        // <a download> в WebView2 срабатывает через раз — в приложении пишем файл через Rust
+        await saveExport(name, new Uint8Array(await blob.arrayBuffer()));
+        flash(inTauri ? 'Сохранено в «Загрузки»' : 'Картинка сохранена');
       }
-    } catch {
+    } catch (e) {
+      console.error('save slide', e);
       flash('Не получилось сохранить картинку');
     } finally {
-      saving = false;
+      busy = null;
     }
   }
 
+  async function copy() {
+    if (busy) return;
+    busy = 'copy';
+    try {
+      // промис вместо готовой картинки: буфер обмена захватывается сразу по клику, пока слайд дорисовывается
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': render() })]);
+      flash('Картинка в буфере — вставляйте в чат');
+    } catch (e) {
+      console.error('copy slide', e);
+      flash('Не получилось скопировать, сохраните картинкой');
+    } finally {
+      busy = null;
+    }
+  }
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -118,7 +132,8 @@
 
   <div class="bottom">
     <button class="nav" onclick={() => go(-1)} disabled={i === 0} aria-label="Назад">‹</button>
-    <button class="save" onclick={save} disabled={saving}>{saving ? 'Рисуем…' : 'Сохранить картинку'}</button>
+    <button class="save" onclick={save} disabled={!!busy}>{busy === 'save' ? 'Рисуем…' : 'Сохранить картинку'}</button>
+    <button class="save copy" onclick={copy} disabled={!!busy}>{busy === 'copy' ? 'Рисуем…' : 'Скопировать'}</button>
     <button class="nav" onclick={() => go(1)} disabled={i === slides.length - 1} aria-label="Дальше">›</button>
   </div>
   <p class="count" aria-live="polite">{i + 1} из {slides.length}</p>
@@ -244,6 +259,9 @@
     font-size: 16px;
     padding: 13px 24px;
     border-radius: 999px 999px 999px 8px;
+  }
+  .copy {
+    background: var(--milk);
   }
   .save:disabled {
     cursor: progress;

@@ -195,6 +195,14 @@ impl Tracker {
         finished
     }
 
+    /// Сколько секунд длится текущая сессия; 0, если человек отошёл дольше чем на `SESSION_BREAK`.
+    pub fn session_secs(&self, at: Instant) -> u64 {
+        match (self.session_start, self.last_active) {
+            (Some(start), Some(last)) if at.saturating_duration_since(last) <= SESSION_BREAK => at.saturating_duration_since(start).as_secs(),
+            _ => 0,
+        }
+    }
+
     /// Последнее движение ввода — для тестов.
     #[cfg(test)]
     pub fn set_last_input(&mut self, t: Instant) {
@@ -257,6 +265,9 @@ mod tests {
         assert_eq!(t.day.apps["Chrome"], 10);
         assert_eq!(t.day.longest_session_sec, 10);
         assert_eq!(t.day.first_active, "09:00");
+        assert_eq!(t.session_secs(t0 + Duration::from_secs(9)), 9);
+        // отошёл больше чем на пять минут — для напоминания о перерыве сессия уже кончилась
+        assert_eq!(t.session_secs(t0 + Duration::from_secs(400)), 0);
 
         // перерыв 10 минут: новая сессия, длинная остаётся прежней
         let later = t0 + Duration::from_secs(700);
@@ -264,6 +275,7 @@ mod tests {
         t.tick(&now("2026-11-01", 9, "09:11", later), Some("Code"));
         assert_eq!(t.day.longest_session_sec, 10);
         assert_eq!(t.day.last_active, "09:11");
+        assert_eq!(t.session_secs(later), 0);
 
         // полночь
         let old = t.tick(&now("2026-11-02", 0, "00:00", later + Duration::from_secs(1)), None).unwrap();

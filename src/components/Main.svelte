@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { firstDate, getDays, getSettings, inTauri, onLive, toggleMini } from '../lib/api';
+  import { firstDate, getDays, getSettings, inTauri, onLive, onOpenStory, saveExport, takePendingStory, toggleMini } from '../lib/api';
   import { aggregate, type Summary } from '../lib/aggregate';
-  import { PERIOD_LABEL, dateLabel, periodRange } from '../lib/dates';
+  import { PERIOD_LABEL, dateLabel, iso, periodRange } from '../lib/dates';
+  import { BASELINE_HINT, baselineRange, baselineTotals, delta, deltaText } from '../lib/compare';
+  import { daysCsv } from '../lib/csv';
   import { count, hours, kmText, num, pct } from '../lib/format';
   import { KEYBOARD, keyName } from '../lib/keyboard';
   import { METRICS } from '../lib/metrics';
@@ -17,8 +19,10 @@
   let first = $state<string>('');
   let settings = $state<SettingsT | null>(null);
   let showSettings = $state(false);
-  let showStory = $state(false);
+  let story = $state<{ summary: Summary; period: PeriodKey } | null>(null);
   let loading = $state(true);
+  let baseline = $state<{ period: PeriodKey; days: DayStats[] } | null>(null);
+  let note = $state('');
 
   const s: Summary = $derived(aggregate(days));
   const totals = $derived({ keys: s.keys, clicks: s.clicks, mouseMm: s.mouseMm, wheelNotches: s.wheelNotches, activeSeconds: s.activeSeconds });
@@ -27,12 +31,55 @@
   const topApps = $derived(s.apps.slice(0, 7));
   const maxApp = $derived(Math.max(1, ...topApps.map((a) => a[1])));
   const backspace = $derived(s.keyMap[8] ?? 0);
+  // для «сегодня» база зависит от часа, поэтому пересчитывается вместе с живыми цифрами
+  const base = $derived.by(() => {
+    void s.activeSeconds; // зависимость от живых цифр: новый тик — новый час для сравнения
+    return baseline?.period === period ? baselineTotals(period, baseline.days, new Date()) : null;
+  });
 
   async function load(p: PeriodKey) {
     loading = true;
-    const r = periodRange(p, new Date(), first || '2000-01-01');
-    days = await getDays(r.from, r.to);
+    const now = new Date();
+    const r = periodRange(p, now, first || '2000-01-01');
+    const b = baselineRange(p, now, first);
+    const [cur, prev] = await Promise.all([getDays(r.from, r.to), b ? getDays(b.from, b.to) : null]);
+    if (p !== period) return; // пока грузили, переключили период
+    days = cur;
+    baseline = prev && { period: p, days: prev };
     loading = false;
+  }
+
+  /** Итоги слайдами. Прошлую неделю или месяц (из уведомления) грузим отдельно, текущий экран не трогаем. */
+  async function openStory(p: PeriodKey) {
+    if (p === period) {
+      story = { summary: s, period: p };
+      return;
+    }
+    const r = periodRange(p, new Date(), first || '2000-01-01');
+    const d = await getDays(r.from, r.to);
+    if (d.length) story = { summary: aggregate(d), period: p };
+  }
+
+  function flashNote(t: string) {
+    note = t;
+    setTimeout(() => (note = ''), 4000);
+  }
+
+  async function exportCsv() {
+    const name = `pc_wrapped_${period}_${iso(new Date())}.csv`;
+    try {
+      const path = await saveExport(name, new TextEncoder().encode(daysCsv(days)));
+      flashNote(`Таблица сохранена: ${path}`);
+    } catch (e) {
+      flashNote(`Не получилось сохранить таблицу: ${e}`);
+    }
+  }
+
+  const STORY_ACTIONS: string[] = ['lastweek', 'lastmonth'];
+  function storyFromToast(action: string | null) {
+    if (!action || !STORY_ACTIONS.includes(action)) return;
+    showSettings = false;
+    openStory(action as PeriodKey);
   }
 
   function pick(p: PeriodKey) {
@@ -42,10 +89,13 @@
 
   onMount(() => {
     let off: (() => void) | null = null;
+    let offStory: (() => void) | null = null;
     (async () => {
       first = await firstDate();
       settings = await getSettings();
       await load(period);
+      offStory = await onOpenStory(storyFromToast);
+      storyFromToast(await takePendingStory());
       // Живое обновление: подменяем сегодняшний день в текущем наборе
       off = await onLive((d) => {
         const i = days.findIndex((x) => x.date === d.date);
@@ -56,7 +106,10 @@
         }
       });
     })();
-    return () => off?.();
+    return () => {
+      off?.();
+      offStory?.();
+    };
   });
 
   const heat = (v: number) => (v ? 0.18 + 0.82 * Math.sqrt(v / maxKey) : 0.06);
@@ -73,7 +126,8 @@
     <div class="actions">
       <button class="ghost" onclick={() => toggleMini()}>Мини-окно</button>
       <button class="ghost" onclick={() => (showSettings = true)}>Настройки</button>
-      <button class="cta" onclick={() => (showStory = true)} disabled={!s.dayCount}>Итоги слайдами</button>
+      <button class="ghost" onclick={exportCsv} disabled={!s.dayCount} title="Таблица по дням за выбранный период, открывается в Excel">CSV</button>
+      <button class="cta" onclick={() => openStory(period)} disabled={!s.dayCount}>Итоги слайдами</button>
     </div>
   </header>
 
@@ -85,12 +139,19 @@
     <section class="tiles" aria-label="Главные счётчики">
       {#each METRICS as m (m.key)}
         <div class="tile" style:--c={m.color}>
-          <span class="t-title">{m.title}</span>
+          <span class="t-head">
+            <span class="t-title">{m.title}</span>
+            {#if base}
+              {@const d = delta(m.raw(totals), m.raw(base))}
+              {#if d !== null}<span class="t-delta" title="{deltaText(d)} {BASELINE_HINT[period]}">{deltaText(d)}</span>{/if}
+            {/if}
+          </span>
           <span class="t-value" use:fit={{ max: 34, min: 16, key: m.value(totals) }}>{m.value(totals)}{#if m.unit(totals)}<small>{m.unit(totals)}</small>{/if}</span>
           <span class="t-fun">{m.fun(totals)}</span>
         </div>
       {/each}
     </section>
+    {#if base && BASELINE_HINT[period]}<p class="base-hint">Стрелки на плитках — больше или меньше, {BASELINE_HINT[period]}.</p>{/if}
 
     {#if s.dayCount === 0 && !loading}
       <div class="empty">
@@ -198,9 +259,11 @@
   <SettingsPanel {settings} onClose={(next) => { if (next) settings = next; showSettings = false; }} />
 {/if}
 
-{#if showStory}
-  <Story summary={s} {period} onClose={() => (showStory = false)} />
+{#if story}
+  <Story summary={story.summary} period={story.period} onClose={() => (story = null)} />
 {/if}
+
+{#if note}<div class="note" role="status">{note}</div>{/if}
 
 <style>
   .app {
@@ -297,9 +360,44 @@
     gap: 2px;
     min-width: 0;
   }
+  .t-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
   .t-title {
     font-weight: 700;
     font-size: 14px;
+  }
+  .t-delta {
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgb(29 20 66 / 0.12);
+    cursor: help;
+  }
+  .base-hint {
+    margin: -8px 0 16px;
+    font-size: 13px;
+    opacity: 0.75;
+  }
+  .note {
+    position: fixed;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%);
+    max-width: min(720px, calc(100vw - 40px));
+    padding: 10px 18px;
+    border-radius: 14px;
+    background: var(--ink);
+    color: var(--milk);
+    font-size: 14px;
+    box-shadow: 0 6px 20px rgb(0 0 0 / 0.3);
+    z-index: 30;
+    overflow-wrap: anywhere;
   }
   .t-value {
     font-family: var(--display);

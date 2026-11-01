@@ -31,6 +31,22 @@ export interface Settings {
   miniMetrics: Metric[];
   miniClickthrough: boolean;
   miniOpen: boolean;
+  notifications: boolean;
+  weeklyReport: boolean;
+  monthlyReport: boolean;
+  breakReminder: boolean;
+  breakMinutes: number;
+  lastWeekly: string;
+  lastMonthly: string;
 }
 
-export type PeriodKey = 'today' | 'week' | 'month' | 'year' | 'all';
+/** Периоды в шапке плюс прошлая календарная неделя и месяц — для итогов из уведомлений. */
+export type PeriodKey = 'today' | 'week' | 'month' | 'year' | 'all' | 'lastweek' | 'lastmonth';
+
+/** Карточка уведомления; `action` — что сделать по клику. */
+export interface ToastData {
+  kind: 'week' | 'month' | 'break' | 'test';
+  title: string;
+  body: string;
+  action?: 'lastweek' | 'lastmonth';
+}

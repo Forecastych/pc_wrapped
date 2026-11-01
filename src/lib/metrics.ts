@@ -15,6 +15,8 @@ export interface MetricDef {
   key: Metric;
   title: string;
   color: string;
+  /** Число, по которому сравниваем периоды. */
+  raw: (t: Totals) => number;
   value: (t: Totals) => string;
   unit: (t: Totals) => string;
   fun: (t: Totals) => string;
@@ -23,6 +25,7 @@ export interface MetricDef {
 export const METRICS: MetricDef[] = [
   {
     key: 'keys',
+    raw: (t) => t.keys,
     title: 'Нажатий',
     color: 'var(--lemon)',
     value: (t) => num(t.keys),
@@ -31,6 +34,7 @@ export const METRICS: MetricDef[] = [
   },
   {
     key: 'mouse',
+    raw: (t) => t.mouseMm,
     title: 'Мышкой',
     color: 'var(--pink)',
     value: (t) => kmText(km(t.mouseMm)),
@@ -39,6 +43,7 @@ export const METRICS: MetricDef[] = [
   },
   {
     key: 'scroll',
+    raw: (t) => t.wheelNotches,
     title: 'Колесом',
     color: 'var(--sky)',
     value: (t) => num(scrollMeters(t.wheelNotches)),
@@ -47,6 +52,7 @@ export const METRICS: MetricDef[] = [
   },
   {
     key: 'clicks',
+    raw: (t) => t.clicks,
     title: 'Кликов',
     color: 'var(--mint)',
     value: (t) => num(t.clicks),
@@ -55,6 +61,7 @@ export const METRICS: MetricDef[] = [
   },
   {
     key: 'active',
+    raw: (t) => t.activeSeconds,
     title: 'За компом',
     color: 'var(--tangerine)',
     value: (t) => hours(t.activeSeconds),

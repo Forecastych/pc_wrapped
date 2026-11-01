@@ -1,5 +1,6 @@
 mod font;
 mod model;
+mod notify;
 mod store;
 mod tracker;
 #[cfg(windows)]
@@ -7,6 +8,7 @@ mod win;
 
 use model::{DayStats, Settings, METRICS};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use store::Store;
@@ -22,6 +24,8 @@ struct AppState {
     settings: Mutex<Settings>,
     /// Что сейчас нарисовано в каждом значке трея, чтобы не перерисовывать то же самое.
     tray_text: Mutex<HashMap<String, String>>,
+    /// Итоги, которые открыть, когда главное окно загрузится (клик по уведомлению при закрытом окне).
+    pending_story: Mutex<Option<String>>,
 }
 
 // ---------- Команды для интерфейса ----------
@@ -59,6 +63,13 @@ fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) 
     s.dpi = s.dpi.clamp(100, 32000);
     s.tray_metrics.retain(|m| METRICS.contains(&m.as_str()));
     s.mini_metrics.retain(|m| METRICS.contains(&m.as_str()));
+    s.break_minutes = s.break_minutes.clamp(15, 240);
+    {
+        // отметки о показанных итогах ведёт только Rust: окно настроек присылает то, что видело при открытии
+        let cur = state.settings.lock().unwrap();
+        s.last_weekly = cur.last_weekly.clone();
+        s.last_monthly = cur.last_monthly.clone();
+    }
     state.store.save_settings(&s).map_err(|e| e.to_string())?;
     state.tracker.lock().unwrap().set_dpi(s.dpi);
     if let Some(w) = app.get_webview_window("mini") {
@@ -82,6 +93,69 @@ async fn toggle_mini(app: AppHandle) {
 #[tauri::command]
 async fn open_main(app: AppHandle) {
     show_main(&app);
+}
+
+#[tauri::command]
+async fn notify_test(app: AppHandle) {
+    show_toast(&app, &notify::sample());
+}
+
+/// Клик по уведомлению: закрыть карточку и, если в ней итоги, открыть их слайдами.
+#[tauri::command]
+async fn toast_action(app: AppHandle, action: Option<String>) {
+    if let Some(w) = app.get_webview_window("toast") {
+        let _ = w.close();
+    }
+    let Some(action) = action else { return };
+    if app.get_webview_window("main").is_some() {
+        let _ = app.emit_to("main", "open-story", &action);
+    } else {
+        *app.state::<AppState>().pending_story.lock().unwrap() = Some(action);
+    }
+    show_main(&app);
+}
+
+#[tauri::command]
+fn take_pending_story(state: State<'_, AppState>) -> Option<String> {
+    state.pending_story.lock().unwrap().take()
+}
+
+/// Сохраняет картинку или таблицу в «Загрузки» и показывает файл в проводнике.
+/// Байты приходят сырым телом запроса (без JSON-массива на мегабайты), имя — в заголовке `x-name`.
+#[tauri::command]
+fn save_export(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("нет данных".into());
+    };
+    let raw = request.headers().get("x-name").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let mut name: String = raw.chars().filter(|c| c.is_ascii_alphanumeric() || "._-".contains(*c)).collect();
+    if name.trim_matches('.').is_empty() {
+        name = "pc_wrapped".into();
+    }
+    let dir = app.path().download_dir().or_else(|_| app.path().app_data_dir()).map_err(|e| e.to_string())?;
+    let path = unique_path(&dir, &name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // explorer понимает кавычки только вокруг пути, а не вокруг всего аргумента
+        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn();
+    }
+    Ok(path.display().to_string())
+}
+
+/// `name.png`, а если такой уже есть — `name (2).png` и дальше.
+fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let p = Path::new(name);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("pc_wrapped");
+    let ext = p.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+    let mut path = dir.join(name);
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
+    path
 }
 
 #[tauri::command]
@@ -155,6 +229,104 @@ fn open_mini_window(app: &AppHandle) {
     }
     if let Ok(w) = b.build() {
         let _ = w.set_ignore_cursor_events(clickthrough);
+    }
+}
+
+// ---------- Уведомления ----------
+
+const TOAST_W: f64 = 340.0;
+const TOAST_H: f64 = 112.0;
+
+/// Игра или видео на весь экран, презентация, заблокированный экран — молчим.
+fn do_not_disturb() -> bool {
+    #[cfg(windows)]
+    {
+        win::do_not_disturb()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Карточка справа снизу, как в мессенджерах. Окно не активируется ни при показе, ни по клику,
+/// поэтому не забирает фокус у игры или набора текста. Вызывать не из главного потока.
+fn show_toast(app: &AppHandle, toast: &notify::Toast) {
+    if app.get_webview_window("toast").is_some() {
+        // новая карточка заменяет старую и заново запускает её таймер
+        let _ = app.emit_to("toast", "toast", toast);
+        return;
+    }
+    let json = serde_json::to_string(toast).unwrap_or_else(|_| "null".into());
+    let mut b = WebviewWindowBuilder::new(app, "toast", WebviewUrl::App("index.html".into()))
+        .title("pc_wrapped")
+        .inner_size(TOAST_W, TOAST_H)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .focusable(false)
+        // класс на body ставим ещё при разборе HTML: иначе до запуска скриптов мелькнёт фиолетовый фон
+        .initialization_script(format!(
+            "window.__TOAST__ = {json};\
+             new MutationObserver((_, o) => {{ if (document.body) {{ document.body.classList.add('toast'); o.disconnect(); }} }})\
+             .observe(document, {{ childList: true, subtree: true }});"
+        ));
+    if let Some((x, y)) = toast_position(app) {
+        b = b.position(x, y);
+    }
+    let _ = b.build();
+}
+
+fn spawn_toast(app: &AppHandle, toast: notify::Toast) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { show_toast(&app, &toast) });
+}
+
+/// Правый нижний угол рабочей области (над панелью задач). Если там стоит мини-окно — над ним.
+fn toast_position(app: &AppHandle) -> Option<(f64, f64)> {
+    let m = app.primary_monitor().ok()??;
+    let sf = m.scale_factor();
+    let wa = m.work_area();
+    let x = (wa.position.x as f64 + wa.size.width as f64) / sf - TOAST_W - 12.0;
+    let mut y = (wa.position.y as f64 + wa.size.height as f64) / sf - TOAST_H - 12.0;
+    if let Some(mini) = app.get_webview_window("mini") {
+        if let (Ok(p), Ok(sz)) = (mini.outer_position(), mini.outer_size()) {
+            let (mx, my) = (p.x as f64 / sf, p.y as f64 / sf);
+            let (mw, mh) = (sz.width as f64 / sf, sz.height as f64 / sf);
+            if mx < x + TOAST_W && mx + mw > x && my < y + TOAST_H && my + mh > y {
+                y = my - TOAST_H - 8.0;
+            }
+        }
+    }
+    Some((x, y))
+}
+
+/// Итоги недели или месяца, если пора. Отметка ставится, даже если показывать нечего
+/// (за период нет данных), — иначе диск проверялся бы каждые 15 секунд всю неделю.
+fn maybe_report(app: &AppHandle, settings: &Settings, today: &str) -> bool {
+    let Ok(date) = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d") else { return false };
+    let Some((kind, key, from, to)) = notify::due(date, settings) else { return false };
+    let state = app.state::<AppState>();
+    let days = state.store.load_range(&from.to_string(), &to.to_string());
+    let toast = notify::report(kind, from, &days);
+    {
+        let mut s = state.settings.lock().unwrap();
+        match kind {
+            notify::Report::Week => s.last_weekly = key,
+            notify::Report::Month => s.last_monthly = key,
+        }
+        let _ = state.store.save_settings(&s);
+    }
+    match toast {
+        Some(t) => {
+            spawn_toast(app, t);
+            true
+        }
+        None => false,
     }
 }
 
@@ -328,6 +500,9 @@ fn start_ticker(app: AppHandle) {
             #[cfg(windows)]
             let mut fg = win::Foreground::new();
             let mut n: u64 = 0;
+            // сколько напоминаний о перерыве уже было в текущей сессии
+            let mut reminded: u64 = 0;
+            let mut last_toast: Option<std::time::Instant> = None;
             loop {
                 std::thread::sleep(Duration::from_secs(1));
                 n += 1;
@@ -338,14 +513,14 @@ fn start_ticker(app: AppHandle) {
                 let current_app: Option<String> = None;
 
                 let state = app.state::<AppState>();
-                let (finished, snapshot, dirty) = {
+                let (finished, snapshot, dirty, session, idle) = {
                     let mut t = state.tracker.lock().unwrap();
                     let finished = t.tick(&now, current_app.as_deref());
                     let dirty = t.dirty;
                     if n % 60 == 0 {
                         t.dirty = false;
                     }
-                    (finished, t.day.clone(), dirty)
+                    (finished, t.day.clone(), dirty, t.session_secs(now.instant), t.idle(now.instant))
                 };
                 if let Some(old) = finished {
                     let _ = state.store.save_day(&old);
@@ -353,9 +528,30 @@ fn start_ticker(app: AppHandle) {
                 if n % 60 == 0 && dirty {
                     let _ = state.store.save_day(&snapshot);
                 }
+                let settings = state.settings.lock().unwrap().clone();
+
+                // Перерыв: напоминаем на каждой кратной `break_minutes` отметке сессии. Счётчик идёт
+                // и при выключенном напоминании, чтобы после включения оно не выстрелило сразу.
+                let due_breaks = session / (settings.break_minutes.max(15) as u64 * 60);
+                if session == 0 {
+                    reminded = 0;
+                } else if due_breaks > reminded {
+                    reminded = due_breaks;
+                    // в игре на весь экран напоминание просто пропускаем: следующее будет через break_minutes
+                    if settings.notifications && settings.break_reminder && !do_not_disturb() {
+                        spawn_toast(&app, notify::break_toast(session));
+                        last_toast = Some(now.instant);
+                    }
+                }
+
+                // Итоги ждут, пока человек за компом и не в полноэкранной игре, и не наступают на пятки другой карточке.
+                let calm = last_toast.map_or(true, |t| now.instant.saturating_duration_since(t) > Duration::from_secs(10));
+                if n % 15 == 0 && settings.notifications && !idle && calm && !do_not_disturb() && maybe_report(&app, &settings, &snapshot.date) {
+                    last_toast = Some(now.instant);
+                }
+
                 if n % 2 == 0 {
                     // значки трея трогаем только из главного потока
-                    let settings = state.settings.lock().unwrap().clone();
                     let a = app.clone();
                     let day = snapshot.clone();
                     let _ = app.run_on_main_thread(move || sync_tray(&a, &settings, &day));
@@ -394,6 +590,7 @@ pub fn run() {
                 store,
                 settings: Mutex::new(settings.clone()),
                 tray_text: Mutex::new(HashMap::new()),
+                pending_story: Mutex::new(None),
             });
 
             // Главный значок приложения: левый клик открывает статистику.
@@ -432,7 +629,11 @@ pub fn run() {
             open_main,
             open_data_dir,
             get_autostart,
-            set_autostart
+            set_autostart,
+            notify_test,
+            toast_action,
+            take_pending_story,
+            save_export
         ])
         .build(tauri::generate_context!())
         .expect("error while building pc_wrapped");

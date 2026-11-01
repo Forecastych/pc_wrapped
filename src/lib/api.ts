@@ -1,6 +1,6 @@
 // Мост к Rust. В обычном браузере (npm run dev без Tauri) работает на выдуманных данных,
 // чтобы интерфейс можно было делать и смотреть без сборки приложения.
-import type { DayStats, Settings } from './types';
+import type { DayStats, Settings, ToastData } from './types';
 import { addDays, iso } from './dates';
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -131,6 +131,13 @@ let demoSettings: Settings = {
   miniMetrics: ['keys', 'clicks', 'mouse', 'scroll'],
   miniClickthrough: false,
   miniOpen: false,
+  notifications: true,
+  weeklyReport: true,
+  monthlyReport: true,
+  breakReminder: false,
+  breakMinutes: 60,
+  lastWeekly: '',
+  lastMonthly: '',
 };
 
 function ensureDemo() {
@@ -235,6 +242,56 @@ export async function onLive(cb: (d: DayStats) => void): Promise<Unlisten> {
   liveListeners.add(cb);
   startDemoTicker();
   return () => liveListeners.delete(cb);
+}
+
+// ---------- Уведомления ----------
+
+export async function notifyTest(): Promise<void> {
+  if (inTauri) return tauriInvoke('notify_test');
+}
+
+/** Клик по карточке: Rust закрывает её и, если есть `action`, открывает итоги в главном окне. */
+export async function toastAction(action?: string): Promise<void> {
+  if (inTauri) return tauriInvoke('toast_action', { action: action ?? null });
+}
+
+export async function onToast(cb: (t: ToastData) => void): Promise<Unlisten> {
+  if (inTauri) return tauriListen('toast', cb);
+  return () => {};
+}
+
+/** Итоги, которые попросили открыть кликом по уведомлению, пока главного окна не было. */
+export async function takePendingStory(): Promise<string | null> {
+  if (inTauri) return tauriInvoke('take_pending_story');
+  return null;
+}
+
+export async function onOpenStory(cb: (action: string) => void): Promise<Unlisten> {
+  if (inTauri) return tauriListen('open-story', cb);
+  return () => {};
+}
+
+export async function closeWindow() {
+  if (!inTauri) return; // в демо это обычная вкладка — закрывать её незачем
+  const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+  await getCurrentWebviewWindow().close();
+}
+
+// ---------- Экспорт ----------
+
+/** Сохраняет файл в «Загрузки» и показывает его в проводнике. Возвращает полный путь. */
+export async function saveExport(name: string, bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  if (inTauri) {
+    // сырые байты, а не JSON: картинка слайда весит мегабайты
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<string>('save_export', bytes, { headers: { 'x-name': name } });
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bytes]));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  return name;
 }
 
 export async function onSettings(cb: (s: Settings) => void): Promise<Unlisten> {

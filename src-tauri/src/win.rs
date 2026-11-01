@@ -349,6 +349,16 @@ fn center_vertically(mask: &[u8], s: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Сейчас лучше не мешать: игра или видео на весь экран, презентация, заблокированный экран.
+/// Это та же проверка, по которой молчат уведомления самой Windows.
+pub fn do_not_disturb() -> bool {
+    use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_ACCEPTS_NOTIFICATIONS, QUNS_APP, QUNS_QUIET_TIME};
+    let mut state = 0;
+    // SAFETY: функция только пишет состояние в переданную переменную.
+    let hr = unsafe { SHQueryUserNotificationState(&mut state) };
+    hr >= 0 && ![QUNS_ACCEPTS_NOTIFICATIONS, QUNS_APP, QUNS_QUIET_TIME].contains(&state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

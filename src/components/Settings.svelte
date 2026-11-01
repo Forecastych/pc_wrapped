@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { getAutostart, inTauri, openDataDir, setAutostart, setSettings } from '../lib/api';
+  import { getAutostart, inTauri, notifyTest, openDataDir, setAutostart, setSettings } from '../lib/api';
   import { METRICS } from '../lib/metrics';
   import type { Metric, Settings } from '../lib/types';
 
@@ -10,6 +10,8 @@
   let autostart = $state(false);
   let saving = $state(false);
   let error = $state('');
+  // значение из файла могло быть не из списка — тогда добавляем его, чтобы select не стал пустым
+  const breakOptions = $derived([...new Set([30, 45, 60, 90, 120, draft.breakMinutes])].sort((a, b) => a - b));
 
   onMount(async () => {
     autostart = await getAutostart();
@@ -71,6 +73,34 @@
         <input type="checkbox" bind:checked={draft.miniClickthrough} />
         Пропускать клики сквозь мини-окно (двигать его тогда нельзя; выключается в меню трея)
       </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Уведомления</legend>
+      <p class="hint">Маленькие карточки справа снизу на четыре секунды. Фокус не забирают, поверх игр и видео на весь экран не показываются.</p>
+      <label class="row">
+        <input type="checkbox" bind:checked={draft.notifications} />
+        Показывать уведомления
+      </label>
+      <div class="sub" class:off={!draft.notifications}>
+        <label class="row">
+          <input type="checkbox" bind:checked={draft.weeklyReport} disabled={!draft.notifications} />
+          Итоги прошлой недели, когда впервые сядете за комп на новой неделе
+        </label>
+        <label class="row">
+          <input type="checkbox" bind:checked={draft.monthlyReport} disabled={!draft.notifications} />
+          Итоги прошлого месяца в начале нового
+        </label>
+        <label class="row">
+          <input type="checkbox" bind:checked={draft.breakReminder} disabled={!draft.notifications} />
+          Напоминать о перерыве после
+          <select class="num" bind:value={draft.breakMinutes} disabled={!draft.notifications || !draft.breakReminder}>
+            {#each breakOptions as m}<option value={m}>{m} мин</option>{/each}
+          </select>
+          без отдыха
+        </label>
+      </div>
+      {#if inTauri}<button class="link sample" onclick={() => notifyTest()}>Показать пример</button>{/if}
     </fieldset>
 
     <fieldset>
@@ -174,6 +204,16 @@
     gap: 10px;
     font-size: 14px;
     margin-top: 10px;
+  }
+  .sub {
+    padding-left: 26px;
+  }
+  .sub.off {
+    opacity: 0.5;
+  }
+  .sample {
+    margin-top: 10px;
+    font-size: 14px;
   }
   .num {
     width: 100px;

@@ -34,7 +34,9 @@ body {
 }
 
 html:has(body.mini),
-body.mini {
+body.mini,
+html:has(body.toast),
+body.toast {
   background: transparent;
   overflow: hidden;
 }
