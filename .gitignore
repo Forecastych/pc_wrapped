@@ -5,3 +5,4 @@ src-tauri/target-rel
 src-tauri/gen
 *.local
 release
+next_chat.txt
